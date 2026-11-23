@@ -6,6 +6,7 @@ from __future__ import annotations
 import os
 from typing import Callable
 
+from .cost import Usage
 from .screening import Screener
 from .skeptic import review
 from .store import Store
@@ -46,6 +47,25 @@ Every tool call must include a `reasoning` argument explaining why you chose thi
 Event = Callable[[dict], None]
 
 
+# Prompt caching. The system prompt and tool definitions never change, and each
+# step only appends to the conversation, so everything before the newest message
+# can be read from cache at 5% of the normal input price.
+CACHED_SYSTEM = [{"type": "text", "text": SYSTEM_PROMPT, "cache_control": {"type": "ephemeral"}}]
+
+
+def _mark_cache_breakpoint(messages: list[dict]) -> None:
+    """Put one cache breakpoint on the last block of the newest message and
+    remove older ones (the API allows at most four breakpoints per request)."""
+    for m in messages:
+        if isinstance(m["content"], list):
+            for b in m["content"]:
+                b.pop("cache_control", None)
+    last = messages[-1]
+    if isinstance(last["content"], str):
+        last["content"] = [{"type": "text", "text": last["content"]}]
+    last["content"][-1]["cache_control"] = {"type": "ephemeral"}
+
+
 def _blocks_to_dicts(content) -> list[dict]:
     out = []
     for b in content:
@@ -65,6 +85,7 @@ class Investigator:
         self.max_steps = max_steps
         self.llm_skeptic = llm_skeptic
         self.on_event = on_event or (lambda e: None)
+        self.usage = Usage(model)
 
     def run(self, mission: str = DEFAULT_MISSION) -> dict:
         self.store.set_meta("mission", mission)
@@ -75,13 +96,15 @@ class Investigator:
         nudges = 0
         while self.tools.finished is None:
             force = step >= self.max_steps - 1
-            kwargs = dict(model=self.model, max_tokens=4096, system=SYSTEM_PROMPT, tools=TOOL_SCHEMAS, messages=messages)
+            kwargs = dict(model=self.model, max_tokens=4096, system=CACHED_SYSTEM, tools=TOOL_SCHEMAS, messages=messages)
             if force:
                 kwargs["tool_choice"] = {"type": "tool", "name": "submit_findings"}
                 messages[-1]["content"] = (messages[-1]["content"] if isinstance(messages[-1]["content"], list)
                                            else [{"type": "text", "text": messages[-1]["content"]}]) + \
                     [{"type": "text", "text": "Step budget exhausted. Submit your findings now with what you have."}]
+            _mark_cache_breakpoint(messages)
             resp = self.client.messages.create(**kwargs)
+            self.usage.add(resp)
             assistant = _blocks_to_dicts(resp.content)
             messages.append({"role": "assistant", "content": assistant})
             for b in assistant:
@@ -117,10 +140,13 @@ class Investigator:
         sub = self.tools.finished or {"summary": "Investigation ended without a submitted assessment.",
                                       "findings": [], "collection_gaps": ""}
         self.on_event({"type": "review", "count": len(sub["findings"])})
-        reviewed = review(sub["findings"], self.store, self.client if self.llm_skeptic else None, self.model)
+        reviewed = review(sub["findings"], self.store, self.client if self.llm_skeptic else None, self.model,
+                          usage=self.usage)
         self.store.save_findings(reviewed)
         self.store.set_meta("summary", sub["summary"])
         self.store.set_meta("collection_gaps", sub.get("collection_gaps", ""))
         self.store.set_meta("steps_used", self.tools.step)
+        self.store.set_meta("usage", self.usage.as_dict())
         self.on_event({"type": "done", "findings": reviewed})
-        return {"summary": sub["summary"], "findings": reviewed, "stats": self.store.stats()}
+        return {"summary": sub["summary"], "findings": reviewed, "stats": self.store.stats(),
+                "usage": self.usage.as_dict()}

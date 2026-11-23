@@ -90,7 +90,7 @@ EVIDENCE:
 Respond with JSON only: {{"support": "supported" | "partial" | "unsupported", "reason": "<one sentence>"}}"""
 
 
-def llm_check(f: dict, store: Store, client, model: str) -> dict:
+def llm_check(f: dict, store: Store, client, model: str, usage=None) -> dict:
     if f["verdict"] == "rejected":
         return f
     blocks = []
@@ -106,6 +106,8 @@ def llm_check(f: dict, store: Store, client, model: str) -> dict:
     try:
         resp = client.messages.create(model=model, max_tokens=300, messages=[{"role": "user", "content": LLM_PROMPT.format(
             statement=f["statement"], confidence=f["confidence"], evidence="\n\n".join(blocks))}])
+        if usage is not None:
+            usage.add(resp)
         text = "".join(getattr(b, "text", "") for b in resp.content)
         data = json.loads(text[text.find("{"): text.rfind("}") + 1])
     except Exception as e:  # never let the reviewer crash the run
@@ -121,11 +123,11 @@ def llm_check(f: dict, store: Store, client, model: str) -> dict:
     return f
 
 
-def review(findings: list[dict], store: Store, client=None, model: str | None = None) -> list[dict]:
+def review(findings: list[dict], store: Store, client=None, model: str | None = None, usage=None) -> list[dict]:
     out = []
     for f in findings:
         r = check_finding(f, store)
         if client is not None and model:
-            r = llm_check(r, store, client, model)
+            r = llm_check(r, store, client, model, usage)
         out.append(r)
     return out

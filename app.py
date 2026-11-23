@@ -111,13 +111,15 @@ kept = [f for f in findings if f["verdict"] != "rejected"]
 if store.get_meta("note"):
     st.warning(store.get_meta("note"))
 st.markdown(f"**Mission:** {store.get_meta('mission', '')}")
-c = st.columns(6)
+c = st.columns(7)
 c[0].metric("Evidence", s["evidence"])
 c[1].metric("Entities", s["entities"])
 c[2].metric("Relationships", s["relationships"])
 c[3].metric("Agent steps", store.get_meta("steps_used", "—"))
 c[4].metric("Findings kept", len(kept))
 c[5].metric("Rejected in review", len(findings) - len(kept))
+_cost = (store.get_meta("usage") or {}).get("approx_cost_usd")
+c[6].metric("API cost", f"${_cost:.2f}" if _cost is not None else "—")
 
 tabs = st.tabs(["Assessment", "Network", "Agent reasoning", "Entity inspector", "Evidence", "Evaluation"])
 

@@ -70,6 +70,12 @@ What gets measured:
 
 On the synthetic data the baseline finds 2 of 5 facts and raises 5 false flags.
 
+## Cost
+
+The data sources are free. The cost is Claude API usage, which should come to well under a dollar for a 30 step live run with the default model. Each run prints its token use and approximate cost, and the dashboard shows it too.
+
+Two things keep it low. The agent resends the whole investigation at every step, so the unchanged part is cached and billed at a small fraction of the normal price. Search results are also shortened before the model sees them, while the full records are still saved and can be read on request.
+
 ## Optional data
 
 **Patents.** Get a free key at patentsview.org and set `PATENTSVIEW_API_KEY`. PatentsView has renamed fields in the past, so if patent search fails, compare `argus/sources/patentsview.py` with the current API docs.

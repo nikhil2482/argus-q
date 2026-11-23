@@ -48,6 +48,15 @@ def printer(e: dict) -> None:
         print(f"\nReviewing {e['count']} findings…")
 
 
+def usage_line(store: Store) -> str:
+    u = store.get_meta("usage") or {}
+    if not u.get("api_calls"):
+        return ""
+    cost = f"about ${u['approx_cost_usd']:.2f}" if u.get("approx_cost_usd") is not None else "cost unknown for this model"
+    return (f"API usage: {u['api_calls']} calls, {u['input_tokens']:,} new input + {u['cache_read_tokens']:,} cached "
+            f"+ {u['output_tokens']:,} output tokens, {cost}")
+
+
 def write_report(store: Store) -> Path:
     path = Path(store.path).with_suffix(".md")
     path.write_text(render(store))
@@ -69,6 +78,7 @@ def cmd_investigate(a):
     for f in res["findings"]:
         print(f"  [{f['verdict']:<10}] ({f['confidence']}) {f['statement'][:110]}")
     print(f"\nAssessment: {write_report(store)}\nRun database: {store.path}")
+    print(usage_line(store))
     if a.mode == "synthetic":
         from argus.evaluate import score
         print(json.dumps({k: v for k, v in score(store).items() if k != 'facts'}, indent=2))
@@ -103,13 +113,15 @@ def cmd_eval(a):
         Investigator(store, get_source("synthetic"), Screener.for_mode("synthetic"), client, a.model, a.steps,
                      on_event=printer).run(DEFAULT_MISSION)
         write_report(store)
-        rows.append({"run": f"agent #{t + 1}", **score(store)})
+        rows.append({"run": f"agent #{t + 1}", **score(store),
+                     "cost_usd": (store.get_meta("usage") or {}).get("approx_cost_usd")})
+        print(usage_line(store))
     store = new_store("synthetic", "baseline-eval")
     run_baseline(store, get_source("synthetic"), Screener.for_mode("synthetic"))
     write_report(store)
-    rows.append({"run": "baseline", **score(store)})
+    rows.append({"run": "baseline", **score(store), "cost_usd": 0})
 
-    cols = ["facts_found", "false_flags", "overclaims", "findings_kept", "findings_rejected_by_skeptic", "steps", "evidence_records"]
+    cols = ["facts_found", "false_flags", "overclaims", "findings_kept", "findings_rejected_by_skeptic", "steps", "evidence_records", "cost_usd"]
     md = ["| run | " + " | ".join(cols) + " |", "|---" * (len(cols) + 1) + "|"]
     md += ["| " + r["run"] + " | " + " | ".join(str(r[c]) for c in cols) + " |" for r in rows]
     table = "\n".join(md)

@@ -149,3 +149,39 @@ def test_tool_errors_return_to_agent(store):
     assert "network down" in out["error"]
     out = json.loads(t.call("search_patents", {"query": "x"})[0])
     assert "not configured" in out["error"]
+
+
+def test_cache_breakpoints_and_usage(store):
+    """Every request caches the system prompt and moves a single breakpoint to the
+    newest message, staying under the API's limit of four breakpoints."""
+    from types import SimpleNamespace
+
+    seen = []
+
+    class Recording(ScriptedClient):
+        def create(self, **kw):
+            if "tools" in kw:
+                msgs = kw["messages"]
+                marks = sum(1 for m in msgs if isinstance(m["content"], list)
+                            for b in m["content"] if "cache_control" in b)
+                seen.append((kw["system"][0].get("cache_control"), marks,
+                             "cache_control" in msgs[-1]["content"][-1]))
+            r = super().create(**kw)
+            r.usage = SimpleNamespace(input_tokens=100, output_tokens=10,
+                                      cache_creation_input_tokens=50, cache_read_input_tokens=900)
+            return r
+
+    res = Investigator(store, get_source("synthetic"), Screener.for_mode("synthetic"), Recording(),
+                       "claude-sonnet-5-5", 40).run()
+    assert seen and all(sys_cc == {"type": "ephemeral"} and marks == 1 and last for sys_cc, marks, last in seen)
+    u = res["usage"]
+    assert u["cache_read_tokens"] > 0 and u["approx_cost_usd"] > 0
+    assert store.get_meta("usage")["api_calls"] == u["api_calls"]
+
+
+def test_search_results_are_compact_and_valid_json(store):
+    t = Toolkit(store, get_source("synthetic"), Screener.for_mode("synthetic"))
+    t.max_steps = 50
+    out = json.loads(t.call("search_publications", {"query": "superconducting qubit", "limit": 25})[0])
+    for r in out["results"]:
+        assert len(r["snippet"]) <= 221 and len(r["authors"]) <= 6

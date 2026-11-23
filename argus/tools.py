@@ -25,8 +25,9 @@ def _schema(props: dict, required: list[str]) -> dict:
 TOOL_SCHEMAS: list[dict] = [
     {"name": "search_publications",
      "description": "Search scholarly publications. Results are stored as evidence; authors, institutions, "
-                    "affiliations and co-publication links are added to the graph automatically.",
-     "input_schema": _schema({"query": {"type": "string"}, "limit": {"type": "integer", "default": 10}}, ["query"])},
+                    "affiliations and co-publication links are added to the graph automatically. Results are abbreviated "
+                    "(short snippet, first authors); use read_evidence for a full record.",
+     "input_schema": _schema({"query": {"type": "string"}, "limit": {"type": "integer", "default": 8}}, ["query"])},
     {"name": "search_patents",
      "description": "Search patents. Assignees and inventors are added to the graph automatically. "
                     "Inventor identities are scoped to each patent: the same name on two records is NOT proof of the same person.",
@@ -89,6 +90,13 @@ TOOL_SCHEMAS: list[dict] = [
 ]
 
 
+# Size limits for what the model sees from a search (the full record is always stored).
+SNIPPET_CHARS = 220
+MAX_AUTHORS = 6
+MAX_ORGS = 8
+MAX_RESULT_CHARS = 12000
+
+
 def grounded(name: str, haystack: str) -> bool:
     n = _norm(name)
     return bool(n) and n in _norm(haystack)
@@ -108,26 +116,34 @@ class Toolkit:
 
     # ------------------------------------------------------------ helpers
     def _summarize_records(self, recs: list[dict]) -> dict:
+        """Store records in full, but show the model a compact version.
+
+        Everything the agent sees here is resent on every later step, so this is
+        kept short: a short snippet, the first few authors, and each organization
+        listed once. read_evidence and get_entity return the full detail on demand.
+        """
         new_ev = new_ent = 0
         items = []
         for r in recs:
             res = self.store.ingest(r)
             new_ev += res["new_evidence"]
             new_ent += res["new_entities"]
-            item: dict[str, Any] = {"evidence_id": r["id"], "kind": r["kind"], "title": r["title"],
-                                    "year": r.get("year"), "snippet": _snippet(r.get("text", ""))}
+            item: dict[str, Any] = {"evidence_id": r["id"], "title": r["title"], "year": r.get("year"),
+                                    "snippet": _snippet(r.get("text", ""), SNIPPET_CHARS)}
             if r["kind"] == "work":
-                orgs: dict[str, dict] = {}
-                people = []
-                for a in r.get("authors", [])[:12]:
-                    people.append({"id": a["id"], "name": a["name"], "org_ids": [i["id"] for i in a.get("institutions", [])]})
+                authors = r.get("authors", [])
+                orgs: dict[str, str] = {}
+                for a in authors:
                     for i in a.get("institutions", []):
-                        orgs[i["id"]] = {"id": i["id"], "name": i["name"], "country": i.get("country")}
-                item["organizations"] = list(orgs.values())
-                item["people"] = people
+                        if i["id"] not in orgs and len(orgs) < MAX_ORGS:
+                            orgs[i["id"]] = f"{i['name']} ({i.get('country') or '?'})"
+                item["orgs"] = orgs
+                item["authors"] = {a["id"]: a["name"] for a in authors[:MAX_AUTHORS]}
+                if len(authors) > MAX_AUTHORS:
+                    item["more_authors"] = len(authors) - MAX_AUTHORS
             else:
-                item["assignees"] = r.get("assignees", [])
-                item["inventors"] = r.get("inventors", [])
+                item["assignees"] = {a["id"]: f"{a['name']} ({a.get('country') or '?'})" for a in r.get("assignees", [])}
+                item["inventors"] = {i["id"]: i["name"] for i in r.get("inventors", [])[:MAX_AUTHORS]}
             items.append(item)
         return {"returned": len(recs), "new_evidence": new_ev, "new_entities": new_ent, "results": items}
 
@@ -146,10 +162,17 @@ class Toolkit:
                 out, summ = {"error": f"{type(e).__name__}: {e}"}, f"error: {type(e).__name__}"
         if isinstance(out, dict) and name != "submit_findings":
             out["steps_remaining"] = max(self.max_steps - self.step, 0)
-        return json.dumps(out, default=str)[:24000], summ
+        dump = lambda o: json.dumps(o, default=str, separators=(",", ":"), ensure_ascii=False)
+        text = dump(out)
+        # Drop whole results rather than cutting the JSON mid-record.
+        while len(text) > MAX_RESULT_CHARS and isinstance(out, dict) and out.get("results"):
+            out["results"].pop()
+            out["omitted_results"] = out.get("omitted_results", 0) + 1
+            text = dump(out)
+        return text[:MAX_RESULT_CHARS], summ
 
     # ------------------------------------------------------------ tools
-    def t_search_publications(self, query: str, limit: int = 10):
+    def t_search_publications(self, query: str, limit: int = 8):
         recs = self.source.search_works(query, min(int(limit), 25))
         out = self._summarize_records(recs)
         return out, f"{out['returned']} publications ({out['new_evidence']} new)"
@@ -197,6 +220,9 @@ class Toolkit:
             return {"error": f"no evidence {evidence_id}; only retrieved records can be read"}, "unknown evidence"
         raw = json.loads(ev["raw"])
         raw["text"] = (raw.get("text") or "")[:6000]
+        if len(raw.get("authors", [])) > 30:
+            raw["omitted_authors"] = len(raw["authors"]) - 30
+            raw["authors"] = raw["authors"][:30]
         return raw, f"read {evidence_id}"
 
     def t_screen_entity(self, entity_id: str):
