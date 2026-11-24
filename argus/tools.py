@@ -46,9 +46,14 @@ TOOL_SCHEMAS: list[dict] = [
      "description": "Read the full text and metadata of one evidence record.",
      "input_schema": _schema({"evidence_id": {"type": "string"}}, ["evidence_id"])},
     {"name": "screen_entity",
-     "description": "Screen an organization's name against the restricted-party list. Returns fuzzy matches with "
-                    "scores. Only 'exact' or 'strong' matches can support a statement that an entity is listed; "
-                    "a 'weak' match is a similarly named different entity until proven otherwise.",
+     "description": "Screen an organization's name against the restricted-party list. Non-U.S. organizations in search "
+                    "results are screened automatically and tagged [SCREENING ...] when there is a match; use this tool "
+                    "for U.S. or untagged organizations or to see all matches. Returns fuzzy matches with "
+                    "scores. Only 'exact' or 'strong' matches can support a statement that an entity is listed. "
+                    "A 'partial' match means a listed entry begins with this exact name and then adds more (often the "
+                    "parent body, sometimes a sub-unit): report it as 'appears on the list as <listed name>, needs "
+                    "confirmation', not as listed or unlisted. A 'weak' match is a similarly named different entity "
+                    "until proven otherwise.",
      "input_schema": _schema({"entity_id": {"type": "string"}}, ["entity_id"])},
     {"name": "register_entity",
      "description": "Add an entity that appears in an evidence record's text but is not yet in the graph "
@@ -126,6 +131,23 @@ class Toolkit:
         hits = [{"id": e["id"], "name": e["name"]} for e in self.store.find_entities(words, limit=5)] if words else []
         return {"error": f"no entity {entity_id}", "did_you_mean": hits}, "unknown entity"
 
+    def _auto_screen(self, org_id: str) -> str:
+        """Screen every non-U.S. organization once, as it first appears, and return a short
+        tag for the search summary when the list has an exact, strong or partial match."""
+        if not self.screener.loaded:
+            return ""
+        ent = self.store.get_entity(org_id)
+        if not ent or ent["kind"] != "organization" or ent["country"] == "US":
+            return ""
+        hits = ent["attrs"].get("screening")
+        if hits is None:
+            hits = self.screener.screen(ent["name"])
+            self.store.set_entity_attr(org_id, "screening", hits)
+        top = next((h for h in hits if h["match"] in ("exact", "strong", "partial")), None)
+        if not top:
+            return ""
+        return f" [SCREENING {top['match'].upper()}: {top['listed_name'][:60]} / {(top.get('list') or '')[:45]}]"
+
     def _evidence_naming(self, name: str, limit: int = 3) -> list[str]:
         out = []
         for ev in self.store.all_evidence():
@@ -156,13 +178,16 @@ class Toolkit:
                 for a in authors:
                     for i in a.get("institutions", []):
                         if i["id"] not in orgs and len(orgs) < MAX_ORGS:
-                            orgs[i["id"]] = f"{i['name']} ({i.get('country') or '?'})"
+                            orgs[i["id"]] = f"{i['name']} ({i.get('country') or '?'})" + self._auto_screen(i["id"])
                 item["orgs"] = orgs
                 item["authors"] = {a["id"]: a["name"] for a in authors[:MAX_AUTHORS]}
                 if len(authors) > MAX_AUTHORS:
                     item["more_authors"] = len(authors) - MAX_AUTHORS
             else:
-                item["assignees"] = {a["id"]: f"{a['name']} ({a.get('country') or '?'})" for a in r.get("assignees", [])}
+                item["assignees"] = {}
+                for a in r.get("assignees", []):
+                    oid = self.store.org_id_by_name(a["name"]) or a["id"]
+                    item["assignees"][oid] = f"{a['name']} ({a.get('country') or '?'})" + self._auto_screen(oid)
                 item["inventors"] = {i["id"]: i["name"] for i in r.get("inventors", [])[:MAX_AUTHORS]}
             items.append(item)
         return {"returned": len(recs), "new_evidence": new_ev, "new_entities": new_ent, "results": items}
@@ -255,7 +280,7 @@ class Toolkit:
         self.store.set_entity_attr(entity_id, "screening", matches)
         best = matches[0]["match"] if matches else "none"
         return {"entity": ent["name"], "matches": matches,
-                "note": "weak = different name similar enough to review; it does not establish a listing."}, \
+                "note": "exact/strong = listed. partial = a listed entry starts with this exact name; needs confirmation. weak = a different, similar name; not a listing."}, \
             f"screened {ent['name']}: {best}"
 
     def t_register_entity(self, name: str, kind: str, evidence_id: str, country: str | None = None):

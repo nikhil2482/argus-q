@@ -45,7 +45,8 @@ class Screener:
         for e in entries:
             names = [e["name"]] + [n.strip() for n in (e.get("alt_names") or "").split(";") if n.strip()]
             for n in names:
-                self.entries.append({**e, "matched_name": n, "_norm": _norm(n)})
+                head = n.split(",", 1)[0] if "," in n else ""
+                self.entries.append({**e, "matched_name": n, "_norm": _norm(n), "_head": _norm(head) if head else ""})
 
     @classmethod
     def for_mode(cls, mode: str, csv_path: str | Path = "data/consolidated_screening_list.csv") -> "Screener":
@@ -75,9 +76,16 @@ class Screener:
         q = _norm(name)
         if not q:
             return []
-        out = []
         sm = SequenceMatcher(None, "", q)  # q is cached as the second sequence
+        out = []
         for e in self.entries:
+            # "P.L. KAPITZA INSTITUTE FOR PHYSICAL PROBLEMS, RUSSIAN ACADEMY OF SCIENCES": the part before
+            # the comma is exactly the queried name. That usually means this body is listed with its parent
+            # added, but some entries list a sub-unit of the queried body instead, so it is flagged for review.
+            if e["_head"] and e["_head"] == q and e["_norm"] != q:
+                out.append({"listed_name": e["matched_name"], "list": e.get("source"), "country": e.get("country"),
+                            "score": 1.0, "match": "partial",
+                            "note": "listed entry starts with this exact name; check whether the full entry is this body"})
             sm.set_seq1(e["_norm"])
             # cheap upper bounds first: the real list has tens of thousands of names
             if sm.real_quick_ratio() < threshold or sm.quick_ratio() < threshold:
@@ -89,5 +97,11 @@ class Screener:
                 kind = "exact" if q == e["_norm"] else ("strong" if score >= 0.93 else "weak")
                 out.append({"listed_name": e["matched_name"], "list": e.get("source"), "country": e.get("country"),
                             "score": round(score, 3), "match": kind})
-        out.sort(key=lambda x: -x["score"])
+        rank = {"exact": 0, "strong": 1, "partial": 2, "weak": 3}
+        seen, uniq = set(), []
+        for m in sorted(out, key=lambda x: (rank[x["match"]], -x["score"])):
+            if m["listed_name"] not in seen:
+                seen.add(m["listed_name"])
+                uniq.append(m)
+        out = uniq
         return out[:5]
