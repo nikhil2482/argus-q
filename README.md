@@ -10,6 +10,8 @@ Every conclusion in the report can be traced three ways:
 
 ## Quick start
 
+On a Mac or Linux, `bash setup.sh` does all of the setup below and runs the tests. Or step by step:
+
 ```bash
 git clone https://github.com/nikhil2482/argus-q.git
 cd argus-q
