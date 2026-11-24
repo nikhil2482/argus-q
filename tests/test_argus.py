@@ -114,7 +114,8 @@ def test_budget_forces_submission(store):
             self.messages = self
 
         def create(self, **kw):
-            if kw.get("tool_choice", {}).get("name") == "submit_findings":
+            last = kw["messages"][-1]["content"]
+            if isinstance(last, list) and any("budget exhausted" in (b.get("text") or "") for b in last):
                 return _Resp([_tu("submit_findings", "budget", summary="s", findings=[])], "tool_use")
             return _Resp([_tu("search_publications", "keep going", query="qubit")], "tool_use")
 
@@ -219,3 +220,37 @@ def test_register_entity_reuses_known_org(tk):
     out = json.loads(tk.call("register_entity", {"name": "Meridian Quantum", "kind": "organization",
                                                   "evidence_id": "W-S02"})[0])
     assert out["entity_id"] == "syn:I03" and out["created"] is False
+
+
+def test_no_forced_tool_choice_anywhere(store):
+    """Claude Sonnet 5.5 rejects forced tool_choice with a 400, so no request may send it."""
+    sent = []
+
+    class Spy(ScriptedClient):
+        def create(self, **kw):
+            sent.append(kw.get("tool_choice"))
+            return super().create(**kw)
+
+    Investigator(store, get_source("synthetic"), Screener.for_mode("synthetic"), Spy(), "claude-sonnet-5-5", 40).run()
+    assert sent and all(tc in (None, {"type": "auto"}) for tc in sent)
+
+
+def test_named_entities_are_attached(store):
+    t = Toolkit(store, get_source("synthetic"), Screener.for_mode("synthetic"))
+    t.max_steps = 50
+    t.call("search_publications", {"query": "dilution refrigerator superconducting", "limit": 20})
+    t.call("search_publications", {"query": "parametric amplifier readout", "limit": 10})
+    f = check_finding({"statement": "Halvorsen systems are used across Pell Valley, Northgate and Meridian.",
+                       "category": "dependency", "confidence": "moderate",
+                       "evidence_ids": ["W-S01", "W-S04"], "entity_ids": ["syn:I03"]}, store)
+    assert {"syn:I01", "syn:I02", "syn:I03"} <= set(f["entity_ids"])
+    g = check_finding({"statement": "Northgate University's Lena Voss also lists the Eastern Institute of Quantum Engineering.",
+                       "category": "foreign_link", "confidence": "low",
+                       "evidence_ids": ["W-S12"], "entity_ids": ["syn:I02", "syn:I07"]}, store)
+    assert "syn:A03" in g["entity_ids"]
+    # an ambiguous short form ("Eastern Institute") attaches nothing by itself
+    t.call("search_publications", {"query": "quantum key distribution metropolitan fiber", "limit": 3})
+    assert store.get_evidence("W-S11")
+    h = check_finding({"statement": "An Eastern Institute paper on fiber QKD.", "category": "context",
+                       "confidence": "low", "evidence_ids": ["W-S11"], "entity_ids": []}, store)
+    assert not {"syn:I07", "syn:I08"} & set(h["entity_ids"])

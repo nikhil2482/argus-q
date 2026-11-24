@@ -98,11 +98,11 @@ class Investigator:
             force = step >= self.max_steps - 1
             kwargs = dict(model=self.model, max_tokens=4096, system=CACHED_SYSTEM, tools=TOOL_SCHEMAS, messages=messages)
             if force:
+                # Claude Sonnet 5.5 rejects a forced tool_choice, so the final call asks in words.
                 self.tools.allow_revision = False
-                kwargs["tool_choice"] = {"type": "tool", "name": "submit_findings"}
                 messages[-1]["content"] = (messages[-1]["content"] if isinstance(messages[-1]["content"], list)
                                            else [{"type": "text", "text": messages[-1]["content"]}]) + \
-                    [{"type": "text", "text": "Step budget exhausted. Submit your findings now with what you have."}]
+                    [{"type": "text", "text": "Step budget exhausted. Your next action must be a submit_findings call with what you have. Do not call any other tool."}]
             _mark_cache_breakpoint(messages)
             resp = self.client.messages.create(**kwargs)
             self.usage.add(resp)
