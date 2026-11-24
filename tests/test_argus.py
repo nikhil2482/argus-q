@@ -254,3 +254,23 @@ def test_named_entities_are_attached(store):
     h = check_finding({"statement": "An Eastern Institute paper on fiber QKD.", "category": "context",
                        "confidence": "low", "evidence_ids": ["W-S11"], "entity_ids": []}, store)
     assert not {"syn:I07", "syn:I08"} & set(h["entity_ids"])
+
+
+def test_real_list_format(tmp_path):
+    """The real Consolidated Screening List: huge fields, people and vessels mixed in,
+    country only inside the address."""
+    import csv
+    p = tmp_path / "csl.csv"
+    with p.open("w", newline="") as f:
+        w = csv.writer(f)
+        w.writerow(["_id", "source", "type", "name", "addresses", "alt_names"])
+        w.writerow(["1", "Entity List (EL)", "Entity", "Origin Quantum Computing Technology (Hefei) Co., Ltd.",
+                    "Building D8, Hefei, CN; " + "x" * 300000, "Origin Quantum; Benyuan Quantum"])
+        w.writerow(["2", "SDN", "Individual", "Zhang Wei", "Beijing, CN", ""])
+        w.writerow(["3", "Entity List (EL)", "Entity", "Sichuan University", "Chengdu, CN", ""])
+    s = Screener.for_mode("live", p)
+    assert {e["matched_name"] for e in s.entries} == {"Origin Quantum Computing Technology (Hefei) Co., Ltd.",
+                                                      "Origin Quantum", "Benyuan Quantum", "Sichuan University"}
+    hit = s.screen("Origin Quantum")[0]
+    assert hit["match"] == "exact" and hit["country"] == "CN"
+    assert s.screen("Tsinghua University") == []

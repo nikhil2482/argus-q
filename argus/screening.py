@@ -17,9 +17,26 @@ from pathlib import Path
 GENERIC = {"co", "ltd", "inc", "llc", "corp", "corporation", "company", "limited", "the", "of", "gmbh", "oy", "sa"}
 
 
+# Words too common in institution names to count as evidence that two names refer to the same body.
+COMMON = {"university", "institute", "technology", "laboratory", "lab", "academy", "science", "sciences",
+          "research", "center", "centre", "national", "state", "and", "for", "electronic", "engineering",
+          "college", "school", "group", "international", "industrial", "industry", "development"}
+
+
+def _distinct(norm: str) -> set[str]:
+    return {t for t in norm.split() if t not in COMMON and len(t) > 2}
+
+
 def _norm(name: str) -> str:
     toks = [t for t in re.split(r"[^a-z0-9]+", (name or "").lower()) if t and t not in GENERIC]
     return " ".join(toks)
+
+
+def _country(addresses: str) -> str:
+    """Country code from the first address, which the list ends with ', CN' style codes."""
+    first = (addresses or "").split(";")[0].strip()
+    m = re.search(r",\s*([A-Z]{2})$", first)
+    return m.group(1) if m else ""
 
 
 class Screener:
@@ -38,10 +55,17 @@ class Screener:
         p = Path(csv_path)
         if not p.exists():
             return cls([])
+        # Some entries carry addresses over 2 MB long, beyond the csv module's default limit.
+        csv.field_size_limit(2**31 - 1)
+        entries = []
         with p.open(newline="", encoding="utf-8", errors="replace") as f:
-            rows = [r for r in csv.DictReader(f) if r.get("name")]
-        return cls([{"name": r["name"], "alt_names": r.get("alt_names", ""), "source": r.get("source", ""),
-                     "country": r.get("country") or r.get("addresses", "")[:60]} for r in rows])
+            for r in csv.DictReader(f):
+                # Only organizations are screened, so skip people, vessels and aircraft.
+                if not r.get("name") or r.get("type") in ("Individual", "Vessel", "Aircraft"):
+                    continue
+                entries.append({"name": r["name"], "alt_names": r.get("alt_names", ""),
+                                "source": r.get("source", ""), "country": _country(r.get("addresses", ""))})
+        return cls(entries)
 
     @property
     def loaded(self) -> bool:
@@ -59,6 +83,8 @@ class Screener:
             if sm.real_quick_ratio() < threshold or sm.quick_ratio() < threshold:
                 continue
             score = sm.ratio()
+            if score >= threshold and score < 0.93 and not (_distinct(q) & _distinct(e["_norm"])):
+                continue  # similar only in generic words, e.g. "Tsinghua University" vs "Sichuan University"
             if score >= threshold:
                 kind = "exact" if q == e["_norm"] else ("strong" if score >= 0.93 else "weak")
                 out.append({"listed_name": e["matched_name"], "list": e.get("source"), "country": e.get("country"),
