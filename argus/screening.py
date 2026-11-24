@@ -28,6 +28,9 @@ def _distinct(norm: str) -> set[str]:
 
 
 def _norm(name: str) -> str:
+    # Drop parenthetical qualifiers: OpenAlex writes "QuantumCTek (China)", the list writes
+    # "National University of Defense Technology (NUDT)".
+    name = re.sub(r"\([^)]*\)", " ", name or "")
     toks = [t for t in re.split(r"[^a-z0-9]+", (name or "").lower()) if t and t not in GENERIC]
     return " ".join(toks)
 
@@ -94,7 +97,12 @@ class Screener:
             if score >= threshold and score < 0.93 and not (_distinct(q) & _distinct(e["_norm"])):
                 continue  # similar only in generic words, e.g. "Tsinghua University" vs "Sichuan University"
             if score >= threshold:
-                kind = "exact" if q == e["_norm"] else ("strong" if score >= 0.93 else "weak")
+                if q == e["_norm"]:
+                    kind = "exact"
+                elif score >= 0.93 and _distinct(q) == _distinct(e["_norm"]):
+                    kind = "strong"  # same distinctive words, small spelling differences
+                else:
+                    kind = "weak"    # e.g. "Core Electronics Technology Research Institute" vs "Electronic Technology Research Institute"
                 out.append({"listed_name": e["matched_name"], "list": e.get("source"), "country": e.get("country"),
                             "score": round(score, 3), "match": kind})
         rank = {"exact": 0, "strong": 1, "partial": 2, "weak": 3}

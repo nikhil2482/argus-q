@@ -62,15 +62,27 @@ def _name_keys(store: Store) -> dict[str, set[str]]:
 
 
 def attach_named_entities(f: dict, store: Store) -> tuple[list[str], list[str]]:
-    """Entity ids the statement names that are also named in the cited evidence."""
+    """Entity ids the statement names that are also named in the cited evidence. A name
+    found only inside a longer matched name ("Institute of Physics" inside "Moscow
+    Institute of Physics and Technology") does not count."""
     text = f" {_norm(f.get('statement', ''))} "
     hays = [store.evidence_haystack(e) for e in f.get("evidence_ids") or []]
     have = set(f.get("entity_ids") or [])
+    keys = _name_keys(store)
+    spans = []
+    for key in keys:
+        start = text.find(f" {key} ")
+        while start != -1:
+            spans.append((start, start + len(key) + 2, key))
+            start = text.find(f" {key} ", start + 1)
+    spans.sort(key=lambda s: -(s[1] - s[0]))
+    kept: list[tuple[int, int, str]] = []
+    for a, b, key in spans:
+        if not any(a >= ka and b <= kb for ka, kb, _ in kept):
+            kept.append((a, b, key))
     added, names = [], []
-    for key, ids in _name_keys(store).items():
-        if f" {key} " not in text:
-            continue
-        for eid in sorted(ids):
+    for _, _, key in kept:
+        for eid in sorted(keys[key]):
             e = store.get_entity(eid)
             if eid in have or not e or not any(grounded(e["name"], h) for h in hays):
                 continue

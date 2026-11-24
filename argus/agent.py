@@ -40,6 +40,8 @@ ANALYTIC STANDARDS (these are checked; violations get findings rejected)
 - Confidence: high = multiple independent records agree; moderate = one clear record or several consistent indirect ones; low = plausible but thin.
 - Distinguish what the evidence states from what you judge. Say what is unknown and what would change your assessment.
 - Never accuse individuals of wrongdoing. Describe documented relationships and why they matter strategically.
+- Write findings at the level of institutions and patterns. Refer to individual researchers by role and affiliation ("an author affiliated with both X and Y"), not by name, unless the person's identity is itself the point of the finding.
+- Records can differ between versions (preprint vs. journal) and index affiliations can be wrong. When versions disagree, say so and treat the affiliation as unconfirmed.
 
 Every tool call must include a `reasoning` argument explaining why you chose this action now."""
 

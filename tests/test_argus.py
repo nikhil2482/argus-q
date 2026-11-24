@@ -274,3 +274,26 @@ def test_real_list_format(tmp_path):
     hit = s.screen("Origin Quantum")[0]
     assert hit["match"] == "exact" and hit["country"] == "CN"
     assert s.screen("Tsinghua University") == []
+
+
+def test_screening_lessons_from_live_run():
+    s = Screener([{"name": "QuantumCTek Co., Ltd.", "source": "EL"},
+                  {"name": "National University of Defense Technology (NUDT)", "source": "EL"},
+                  {"name": "ELECTRONIC TECHNOLOGY RESEARCH INSTITUTE", "source": "SDN"}])
+    assert s.screen("QuantumCTek (China)")[0]["match"] == "exact"
+    assert s.screen("National University of Defense Technology")[0]["match"] == "exact"
+    # high string similarity but an extra distinctive word: not strong
+    assert s.screen("Core Electronics Technology Research Institute")[0]["match"] == "weak"
+
+
+def test_shorter_name_inside_longer_name_is_not_attached(store):
+    from argus.skeptic import attach_named_entities
+    store.add_evidence({"id": "E1", "source": "t", "kind": "work", "title": "t", "text": "",
+                        "authors": [{"id": "p", "name": "A B", "institutions": [
+                            {"id": "o1", "name": "Moscow Institute of Physics and Technology"},
+                            {"id": "o2", "name": "Institute of Physics"}]}]})
+    store.upsert_entity("o1", "organization", "Moscow Institute of Physics and Technology", "RU")
+    store.upsert_entity("o2", "organization", "Institute of Physics", "CN")
+    added, _ = attach_named_entities({"statement": "Work at the Moscow Institute of Physics and Technology.",
+                                      "evidence_ids": ["E1"], "entity_ids": []}, store)
+    assert added == ["o1"]
