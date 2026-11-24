@@ -108,8 +108,9 @@ class ScriptedClient:
         self.messages = self
 
     def create(self, **kwargs):
-        if "tools" not in kwargs:  # skeptic review call
-            return _Resp([_Block("text", '{"support": "supported", "reason": "scripted review"}')], "end_turn")
+        if kwargs.get("tool_choice", {}).get("name") == "record_verdict":  # reviewer call
+            return _Resp([_Block("tool_use", id="toolu_review", name="record_verdict",
+                                 input={"support": "supported", "reason": "scripted review"})], "tool_use")
         blocks = self.script[min(self.i, len(self.script) - 1)]
         self.i += 1
         return _Resp(blocks, "tool_use")

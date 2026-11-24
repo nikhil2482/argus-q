@@ -5,6 +5,7 @@ argument, which is written to the decision log: that log is how ARGUS-Q answers
 from __future__ import annotations
 
 import json
+import re
 from typing import Any
 
 from .screening import Screener, _norm
@@ -74,7 +75,8 @@ TOOL_SCHEMAS: list[dict] = [
      "input_schema": _schema({}, [])},
     {"name": "submit_findings",
      "description": "Finish the investigation and submit the assessment. Each finding must cite evidence ids and entity ids. "
-                    "Findings are independently checked; unsupported ones are rejected.",
+                    "Findings are checked on submission: if any would be rejected you get them back once with the reasons "
+                    "and can resubmit. They are then independently reviewed.",
      "input_schema": _schema({
          "summary": {"type": "string", "description": "Bottom line up front, 2-4 sentences."},
          "findings": {"type": "array", "items": {"type": "object", "properties": {
@@ -113,8 +115,26 @@ class Toolkit:
         self.step = 0
         self.max_steps = 0
         self.finished: dict | None = None
+        self.allow_revision = True   # one chance to fix findings that fail the deterministic checks
+        self.revised = False
 
     # ------------------------------------------------------------ helpers
+    def _unknown_entity(self, entity_id: str):
+        """Error for a guessed or mistyped id, with the closest real entities."""
+        words = " ".join(w for w in re.split(r"[^a-z0-9]+", entity_id.lower().split(":", 1)[-1])
+                         if len(w) > 2 and w not in {"asg", "inv"})
+        hits = [{"id": e["id"], "name": e["name"]} for e in self.store.find_entities(words, limit=5)] if words else []
+        return {"error": f"no entity {entity_id}", "did_you_mean": hits}, "unknown entity"
+
+    def _evidence_naming(self, name: str, limit: int = 3) -> list[str]:
+        out = []
+        for ev in self.store.all_evidence():
+            if grounded(name, self.store.evidence_haystack(ev["id"])):
+                out.append(ev["id"])
+                if len(out) >= limit:
+                    break
+        return out
+
     def _summarize_records(self, recs: list[dict]) -> dict:
         """Store records in full, but show the model a compact version.
 
@@ -187,7 +207,7 @@ class Toolkit:
     def t_expand_entity(self, entity_id: str, limit: int = 15):
         ent = self.store.get_entity(entity_id)
         if not ent:
-            return {"error": f"no entity {entity_id}"}, "unknown entity"
+            return self._unknown_entity(entity_id)
         recs = self.source.works_for_entity(entity_id, ent["name"], min(int(limit), 25))
         out = self._summarize_records(recs)
         return out, f"expanded {ent['name']}: {out['returned']} records ({out['new_evidence']} new)"
@@ -195,7 +215,7 @@ class Toolkit:
     def t_get_entity(self, entity_id: str):
         ent = self.store.get_entity(entity_id)
         if not ent:
-            return {"error": f"no entity {entity_id}"}, "unknown entity"
+            return self._unknown_entity(entity_id)
         grouped: dict[tuple, dict] = {}
         for r in self.store.relationships_for(entity_id, limit=200):
             other = r["dst"] if r["src"] == entity_id else r["src"]
@@ -228,7 +248,7 @@ class Toolkit:
     def t_screen_entity(self, entity_id: str):
         ent = self.store.get_entity(entity_id)
         if not ent:
-            return {"error": f"no entity {entity_id}"}, "unknown entity"
+            return self._unknown_entity(entity_id)
         if not self.screener.loaded:
             return {"error": "no screening list loaded (see README: data/consolidated_screening_list.csv)"}, "no list"
         matches = self.screener.screen(ent["name"])
@@ -244,6 +264,11 @@ class Toolkit:
             return {"error": f"no evidence {evidence_id}"}, "rejected: unknown evidence"
         if not grounded(name, hay):
             return {"error": f"'{name}' does not appear in {evidence_id}; not registered"}, "rejected: ungrounded name"
+        if kind == "organization":
+            existing = self.store.org_id_by_name(name)
+            if existing:
+                return {"entity_id": existing, "created": False,
+                        "note": "this organization was already in the graph under this id"}, f"{name} already known"
         eid = f"agent:{slug(name)}"
         created = self.store.upsert_entity(eid, kind, name, country, {"first_evidence": evidence_id}, origin="agent")
         self.store.db.commit()
@@ -290,5 +315,31 @@ class Toolkit:
                 "foreign_orgs": foreign[:40]}, "status"
 
     def t_submit_findings(self, summary: str, findings: list[dict], collection_gaps: str = ""):
+        # Before accepting, run the same deterministic checks the reviewer will run and
+        # give the agent one chance to repair findings that would be thrown out.
+        if self.allow_revision and not self.revised:
+            from .skeptic import check_finding
+            problems = []
+            for i, f in enumerate(findings):
+                r = check_finding(f, self.store)
+                if r["verdict"] != "rejected":
+                    continue
+                item = {"index": i, "statement": f.get("statement", "")[:160], "problem": r["verdict_notes"]}
+                cited = [self.store.evidence_haystack(e) for e in f.get("evidence_ids") or []]
+                hints = {}
+                for eid in f.get("entity_ids") or []:
+                    ent = self.store.get_entity(eid)
+                    if ent and not any(grounded(ent["name"], h) for h in cited):
+                        hints[ent["name"]] = self._evidence_naming(ent["name"])
+                if hints:
+                    item["evidence_that_names_these_entities"] = hints
+                problems.append(item)
+            if problems:
+                self.revised = True
+                return {"accepted": False, "problems": problems,
+                        "instructions": "These findings would be rejected in review. Fix them (cite evidence that names "
+                                        "each entity, remove unsupported entities, or reword) or drop them, then call "
+                                        "submit_findings again with the COMPLETE list of findings. This is your only revision."}, \
+                    f"{len(problems)} findings need revision"
         self.finished = {"summary": summary, "findings": findings, "collection_gaps": collection_gaps}
         return {"received": len(findings)}, f"submitted {len(findings)} findings"

@@ -30,7 +30,7 @@ METHOD
 3. Extract: when a record's text names a supplier, technology or partner that is not in the graph, register_entity it and add_relationship with the exact supporting fact as rationale.
 4. Screen: screen foreign organizations that appear connected to U.S. programs.
 5. Challenge: before submitting, look for alternatives and disconfirming evidence (e.g. other suppliers; whether a similarly named entity is actually the listed one).
-6. Submit: call submit_findings with a bottom line and findings.
+6. Submit: call submit_findings with a bottom line and findings. If some findings come back with problems, fix them and resubmit the full list.
 
 ANALYTIC STANDARDS (these are checked; violations get findings rejected)
 - Every finding cites evidence_ids you actually retrieved and entity_ids that are named in that evidence.
@@ -98,6 +98,7 @@ class Investigator:
             force = step >= self.max_steps - 1
             kwargs = dict(model=self.model, max_tokens=4096, system=CACHED_SYSTEM, tools=TOOL_SCHEMAS, messages=messages)
             if force:
+                self.tools.allow_revision = False
                 kwargs["tool_choice"] = {"type": "tool", "name": "submit_findings"}
                 messages[-1]["content"] = (messages[-1]["content"] if isinstance(messages[-1]["content"], list)
                                            else [{"type": "text", "text": messages[-1]["content"]}]) + \

@@ -15,6 +15,17 @@ from .tools import grounded
 
 LEVELS = ["low", "moderate", "high"]
 LISTING_CLAIM = re.compile(r"\b(entity list|screening list|restricted[- ]party|listed|sanction\w*|designated)\b", re.I)
+NEGATION = re.compile(r"\b(not|no|none|neither|nor|never|without|weak|isn't|aren't|wasn't|absent)\b", re.I)
+
+
+def asserts_listing(statement: str) -> bool:
+    """True if some sentence says an entity IS listed or sanctioned. Sentences
+    that deny a listing ("none of them are on the list") or describe a weak
+    match do not count."""
+    for sentence in re.split(r"(?<=[.!?;])\s+", statement or ""):
+        if LISTING_CLAIM.search(sentence) and not NEGATION.search(sentence):
+            return True
+    return False
 
 
 def _down(conf: str) -> str:
@@ -52,7 +63,7 @@ def check_finding(f: dict, store: Store) -> dict:
         return {**f, "verdict": "rejected",
                 "verdict_notes": "; ".join(notes + [f"entities not named in cited evidence: {ungrounded}"])}
 
-    if LISTING_CLAIM.search(f.get("statement", "")):
+    if asserts_listing(f.get("statement", "")):
         confirmed = [e for e in ents if any(m.get("match") in ("exact", "strong") for m in e["attrs"].get("screening", []))]
         if not confirmed:
             return {**f, "verdict": "rejected",
@@ -87,7 +98,16 @@ CLAIMED CONFIDENCE: {confidence}
 EVIDENCE:
 {evidence}
 
-Respond with JSON only: {{"support": "supported" | "partial" | "unsupported", "reason": "<one sentence>"}}"""
+Record your judgment with the record_verdict tool."""
+
+VERDICT_TOOL = {
+    "name": "record_verdict",
+    "description": "Record whether the evidence supports the statement.",
+    "input_schema": {"type": "object", "properties": {
+        "support": {"type": "string", "enum": ["supported", "partial", "unsupported"]},
+        "reason": {"type": "string", "description": "One sentence."}},
+        "required": ["support", "reason"]},
+}
 
 
 def llm_check(f: dict, store: Store, client, model: str, usage=None) -> dict:
@@ -104,12 +124,17 @@ def llm_check(f: dict, store: Store, client, model: str, usage=None) -> dict:
         if e and e["attrs"].get("screening"):
             blocks.append(f"[screening result for {e['name']}] {json.dumps(e['attrs']['screening'])}")
     try:
-        resp = client.messages.create(model=model, max_tokens=300, messages=[{"role": "user", "content": LLM_PROMPT.format(
-            statement=f["statement"], confidence=f["confidence"], evidence="\n\n".join(blocks))}])
+        resp = client.messages.create(
+            model=model, max_tokens=400, tools=[VERDICT_TOOL],
+            tool_choice={"type": "tool", "name": "record_verdict"},
+            messages=[{"role": "user", "content": LLM_PROMPT.format(
+                statement=f["statement"], confidence=f["confidence"], evidence="\n\n".join(blocks))}])
         if usage is not None:
             usage.add(resp)
-        text = "".join(getattr(b, "text", "") for b in resp.content)
-        data = json.loads(text[text.find("{"): text.rfind("}") + 1])
+        data = next((b.input for b in resp.content if getattr(b, "type", "") == "tool_use"), None)
+        if data is None:  # fall back to JSON in text
+            text = "".join(getattr(b, "text", "") for b in resp.content)
+            data = json.loads(text[text.find("{"): text.rfind("}") + 1])
     except Exception as e:  # never let the reviewer crash the run
         f["verdict_notes"] = (f["verdict_notes"] + f"; LLM review unavailable ({type(e).__name__})").strip("; ")
         return f

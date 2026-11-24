@@ -160,7 +160,7 @@ def test_cache_breakpoints_and_usage(store):
 
     class Recording(ScriptedClient):
         def create(self, **kw):
-            if "tools" in kw:
+            if "system" in kw:  # agent steps (reviewer calls have no system prompt)
                 msgs = kw["messages"]
                 marks = sum(1 for m in msgs if isinstance(m["content"], list)
                             for b in m["content"] if "cache_control" in b)
@@ -185,3 +185,37 @@ def test_search_results_are_compact_and_valid_json(store):
     out = json.loads(t.call("search_publications", {"query": "superconducting qubit", "limit": 25})[0])
     for r in out["results"]:
         assert len(r["snippet"]) <= 221 and len(r["authors"]) <= 6
+
+
+def test_negated_listing_statement_is_not_a_listing_claim(tk, store):
+    from argus.skeptic import asserts_listing
+    assert asserts_listing("Shenhai is on the entity list.")
+    assert not asserts_listing("None of these collaborators are on the screening list.")
+    assert not asserts_listing("It is a weak match to a listed institute.")
+    f = check_finding({"statement": "Meridian's partners show no sign of concern; none are listed.",
+                       "category": "context", "confidence": "low", "evidence_ids": ["W-S04"],
+                       "entity_ids": ["syn:I03"]}, store)
+    assert f["verdict"] != "rejected"
+
+
+def test_submit_gets_one_revision_with_hints(tk, store):
+    bad = {"statement": "Halvorsen supplies Meridian.", "category": "dependency", "confidence": "moderate",
+           "evidence_ids": ["W-S04"], "entity_ids": ["syn:I03", "syn:I04"], "gaps": "x"}
+    out = json.loads(tk.call("submit_findings", {"summary": "s", "findings": [bad]})[0])
+    assert out["accepted"] is False and tk.finished is None
+    hints = out["problems"][0]["evidence_that_names_these_entities"]
+    assert "W-S03" in hints["Coldline Systems Inc."]
+    # second submission is accepted as-is; the reviewer then judges it
+    tk.call("submit_findings", {"summary": "s", "findings": [bad]})
+    assert tk.finished is not None
+
+
+def test_unknown_entity_suggests_real_ids(tk):
+    out = json.loads(tk.call("screen_entity", {"entity_id": "syn:asg-meridian-quantum"})[0])
+    assert any(h["id"] == "syn:I03" for h in out["did_you_mean"])
+
+
+def test_register_entity_reuses_known_org(tk):
+    out = json.loads(tk.call("register_entity", {"name": "Meridian Quantum", "kind": "organization",
+                                                  "evidence_id": "W-S02"})[0])
+    assert out["entity_id"] == "syn:I03" and out["created"] is False
