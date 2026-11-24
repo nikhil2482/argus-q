@@ -52,8 +52,13 @@ class Screener:
         if not q:
             return []
         out = []
+        sm = SequenceMatcher(None, "", q)  # q is cached as the second sequence
         for e in self.entries:
-            score = SequenceMatcher(None, q, e["_norm"]).ratio()
+            sm.set_seq1(e["_norm"])
+            # cheap upper bounds first: the real list has tens of thousands of names
+            if sm.real_quick_ratio() < threshold or sm.quick_ratio() < threshold:
+                continue
+            score = sm.ratio()
             if score >= threshold:
                 kind = "exact" if q == e["_norm"] else ("strong" if score >= 0.93 else "weak")
                 out.append({"listed_name": e["matched_name"], "list": e.get("source"), "country": e.get("country"),
