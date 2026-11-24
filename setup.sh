@@ -37,6 +37,7 @@ if [ ! -d .git ] && command -v git >/dev/null 2>&1; then
   git remote add origin "$REPO"
   if git fetch -q origin main 2>/dev/null; then
     git reset -q origin/main
+    git branch -q --set-upstream-to=origin/main main
     echo "Linked. 'git pull' will now get updates."
   else
     echo "Could not reach GitHub (sign in with 'gh auth login' or a token). The code still works without it."
